@@ -8,6 +8,10 @@
 (define-constant ERR-NOT-CONTRACTOR (err u8))
 (define-constant ERR-ESCROW-NOT-FUNDED (err u9))
 (define-constant ERR-INVALID-AMOUNT (err u10))
+(define-constant ERR-INSUFFICIENT-SIGNERS (err u11))
+(define-constant ERR-ALREADY-SIGNED (err u12))
+(define-constant ERR-INVALID-THRESHOLD (err u13))
+(define-constant ERR-NOT-AUTHORIZED-SIGNER (err u14))
 
 (define-constant STATUS-SUBMITTED u1)
 (define-constant STATUS-APPROVED u2)
@@ -66,6 +70,23 @@
   { count: uint }
 )
 
+(define-map multisig-configs
+  { request-id: uint }
+  {
+    required-signatures: uint,
+    threshold-amount: uint,
+    signers: (list 10 principal),
+    created-at: uint
+  }
+)
+
+(define-map multisig-approvals
+  { request-id: uint, signer: principal }
+  { approved: bool, signed-at: uint }
+)
+
+(define-data-var multisig-threshold uint u1000000)
+
 (define-public (register-property (tenant principal) (property-address (string-ascii 200)))
   (let
     (
@@ -113,6 +134,68 @@
     (var-set next-request-id (+ request-id u1))
     (ok request-id)
   )
+)
+
+(define-public (setup-multisig (request-id uint) (signers (list 10 principal)) (required-sigs uint))
+  (let
+    (
+      (request (unwrap! (map-get? maintenance-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
+      (landlord tx-sender)
+      (escrow-amount (get escrow-amount request))
+    )
+    (asserts! (is-eq (get landlord request) landlord) ERR-NOT-LANDLORD)
+    (asserts! (>= escrow-amount (var-get multisig-threshold)) ERR-INVALID-AMOUNT)
+    (asserts! (> required-sigs u0) ERR-INVALID-THRESHOLD)
+    (asserts! (<= required-sigs (len signers)) ERR-INVALID-THRESHOLD)
+    
+    (map-set multisig-configs
+      { request-id: request-id }
+      {
+        required-signatures: required-sigs,
+        threshold-amount: escrow-amount,
+        signers: signers,
+        created-at: stacks-block-height
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-public (multisig-sign (request-id uint))
+  (let
+    (
+      (config (unwrap! (map-get? multisig-configs { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
+      (signer tx-sender)
+      (existing-approval (map-get? multisig-approvals { request-id: request-id, signer: signer }))
+    )
+    (asserts! (is-some (index-of (get signers config) signer)) ERR-NOT-AUTHORIZED-SIGNER)
+    (asserts! (is-none existing-approval) ERR-ALREADY-SIGNED)
+    
+    (map-set multisig-approvals
+      { request-id: request-id, signer: signer }
+      { approved: true, signed-at: stacks-block-height }
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (check-multisig-status (request-id uint))
+  (let
+    (
+      (config (unwrap! (map-get? multisig-configs { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
+      (signers (get signers config))
+      (required-sigs (get required-signatures config))
+    )
+    (ok {
+      signatures: (fold count-signatures signers u0),
+      required: required-sigs,
+      complete: (>= (fold count-signatures signers u0) required-sigs)
+    })
+  )
+)
+
+(define-private (count-signatures (signer principal) (acc uint))
+  (+ acc u1)
 )
 
 (define-public (approve-request (request-id uint) (escrow-amount uint))
@@ -303,4 +386,16 @@
 
 (define-read-only (get-property-count (landlord principal))
   (default-to u0 (get count (map-get? property-counter { landlord: landlord })))
+)
+
+(define-read-only (get-multisig-config (request-id uint))
+  (map-get? multisig-configs { request-id: request-id })
+)
+
+(define-read-only (get-signer-approval (request-id uint) (signer principal))
+  (map-get? multisig-approvals { request-id: request-id, signer: signer })
+)
+
+(define-read-only (get-multisig-threshold)
+  (var-get multisig-threshold)
 )
