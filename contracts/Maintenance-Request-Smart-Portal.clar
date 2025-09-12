@@ -12,6 +12,9 @@
 (define-constant ERR-ALREADY-SIGNED (err u12))
 (define-constant ERR-INVALID-THRESHOLD (err u13))
 (define-constant ERR-NOT-AUTHORIZED-SIGNER (err u14))
+(define-constant ERR-INVALID-PRIORITY (err u15))
+(define-constant ERR-SLA-VIOLATED (err u16))
+(define-constant ERR-INSUFFICIENT-PENALTY (err u17))
 
 (define-constant STATUS-SUBMITTED u1)
 (define-constant STATUS-APPROVED u2)
@@ -20,8 +23,14 @@
 (define-constant STATUS-VERIFIED u5)
 (define-constant STATUS-REJECTED u6)
 
+(define-constant PRIORITY-EMERGENCY u1)
+(define-constant PRIORITY-URGENT u2)
+(define-constant PRIORITY-NORMAL u3)
+(define-constant PRIORITY-LOW u4)
+
 (define-data-var next-request-id uint u1)
 (define-data-var contract-owner principal tx-sender)
+(define-data-var penalty-pool uint u0)
 
 (define-map maintenance-requests
   { request-id: uint }
@@ -33,9 +42,12 @@
     description: (string-ascii 500),
     evidence-hash: (string-ascii 64),
     status: uint,
+    priority: uint,
     escrow-amount: uint,
     created-at: uint,
-    completed-at: (optional uint)
+    completed-at: (optional uint),
+    approved-at: (optional uint),
+    sla-deadline: uint
   }
 )
 
@@ -85,6 +97,24 @@
   { approved: bool, signed-at: uint }
 )
 
+(define-map priority-penalties
+  { landlord: principal }
+  {
+    total-penalties: uint,
+    violation-count: uint,
+    last-violation: uint
+  }
+)
+
+(define-map contractor-bonuses
+  { contractor: principal, request-id: uint }
+  {
+    bonus-amount: uint,
+    early-completion: bool,
+    time-saved: uint
+  }
+)
+
 (define-data-var multisig-threshold uint u1000000)
 
 (define-public (register-property (tenant principal) (property-address (string-ascii 200)))
@@ -110,12 +140,15 @@
   (landlord principal) 
   (title (string-ascii 100)) 
   (description (string-ascii 500)) 
-  (evidence-hash (string-ascii 64)))
+  (evidence-hash (string-ascii 64))
+  (priority uint))
   (let
     (
       (request-id (var-get next-request-id))
       (tenant tx-sender)
+      (sla-blocks (get-sla-blocks priority))
     )
+    (asserts! (and (>= priority PRIORITY-EMERGENCY) (<= priority PRIORITY-LOW)) ERR-INVALID-PRIORITY)
     (map-set maintenance-requests
       { request-id: request-id }
       {
@@ -126,9 +159,12 @@
         description: description,
         evidence-hash: evidence-hash,
         status: STATUS-SUBMITTED,
+        priority: priority,
         escrow-amount: u0,
         created-at: stacks-block-height,
-        completed-at: none
+        completed-at: none,
+        approved-at: none,
+        sla-deadline: (+ stacks-block-height sla-blocks)
       }
     )
     (var-set next-request-id (+ request-id u1))
@@ -198,26 +234,77 @@
   (+ acc u1)
 )
 
+(define-private (get-sla-blocks (priority uint))
+  (if (is-eq priority PRIORITY-EMERGENCY)
+    u6
+    (if (is-eq priority PRIORITY-URGENT)
+      u144
+      (if (is-eq priority PRIORITY-NORMAL)
+        u1008
+        u2016))))
+
+(define-private (calculate-penalty-amount (priority uint) (escrow-amount uint))
+  (if (is-eq priority PRIORITY-EMERGENCY)
+    (/ (* escrow-amount u50) u100)
+    (if (is-eq priority PRIORITY-URGENT)
+      (/ (* escrow-amount u30) u100)
+      (/ (* escrow-amount u15) u100))))
+
+(define-private (calculate-bonus-amount (priority uint) (escrow-amount uint) (time-saved uint))
+  (let
+    (
+      (base-bonus (if (is-eq priority PRIORITY-EMERGENCY)
+        (/ (* escrow-amount u20) u100)
+        (if (is-eq priority PRIORITY-URGENT)
+          (/ (* escrow-amount u15) u100)
+          (/ (* escrow-amount u10) u100))))
+    )
+    (if (> time-saved u0)
+      (+ base-bonus (/ (* base-bonus time-saved) u100))
+      base-bonus)))
+
 (define-public (approve-request (request-id uint) (escrow-amount uint))
   (let
     (
       (request (unwrap! (map-get? maintenance-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
       (landlord tx-sender)
+      (current-block stacks-block-height)
+      (sla-deadline (get sla-deadline request))
+      (priority (get priority request))
+      (sla-violated (> current-block sla-deadline))
+      (penalty-amount (if sla-violated (calculate-penalty-amount priority escrow-amount) u0))
+      (total-escrow (+ escrow-amount penalty-amount))
     )
     (asserts! (is-eq (get landlord request) landlord) ERR-NOT-LANDLORD)
     (asserts! (is-eq (get status request) STATUS-SUBMITTED) ERR-INVALID-STATUS)
     (asserts! (> escrow-amount u0) ERR-INVALID-AMOUNT)
     
+    (if sla-violated
+      (begin
+        (try! (stx-transfer? penalty-amount landlord (as-contract tx-sender)))
+        (var-set penalty-pool (+ (var-get penalty-pool) penalty-amount))
+        (map-set priority-penalties
+          { landlord: landlord }
+          {
+            total-penalties: (+ penalty-amount (default-to u0 (get total-penalties (map-get? priority-penalties { landlord: landlord })))),
+            violation-count: (+ u1 (default-to u0 (get violation-count (map-get? priority-penalties { landlord: landlord })))),
+            last-violation: current-block
+          })
+      )
+      true
+    )
+    
     (map-set maintenance-requests
       { request-id: request-id }
       (merge request { 
         status: STATUS-APPROVED, 
-        escrow-amount: escrow-amount 
+        escrow-amount: total-escrow,
+        approved-at: (some current-block)
       })
     )
     (map-set request-escrow
       { request-id: request-id }
-      { amount: escrow-amount, funded: false, released: false }
+      { amount: total-escrow, funded: false, released: false }
     )
     (ok true)
   )
@@ -294,6 +381,13 @@
       (tenant tx-sender)
       (contractor (unwrap! (get contractor request) ERR-NOT-CONTRACTOR))
       (completion-time (- stacks-block-height (get created-at request)))
+      (priority (get priority request))
+      (expected-completion (get-sla-blocks priority))
+      (early-completion (< completion-time expected-completion))
+      (time-saved (if early-completion (- expected-completion completion-time) u0))
+      (bonus-amount (if early-completion (calculate-bonus-amount priority (get amount escrow) time-saved) u0))
+      (base-payment (get amount escrow))
+      (total-payment (+ base-payment bonus-amount))
     )
     (asserts! (is-eq (get tenant request) tenant) ERR-NOT-TENANT)
     (asserts! (is-eq (get status request) STATUS-COMPLETED) ERR-INVALID-STATUS)
@@ -301,7 +395,22 @@
     (asserts! (<= contractor-rating u5) ERR-INVALID-AMOUNT)
     (asserts! (<= service-rating u5) ERR-INVALID-AMOUNT)
     
-    (try! (as-contract (stx-transfer? (get amount escrow) tx-sender contractor)))
+    (try! (as-contract (stx-transfer? base-payment tx-sender contractor)))
+    
+    (if early-completion
+      (begin
+        (try! (as-contract (stx-transfer? bonus-amount tx-sender contractor)))
+        (var-set penalty-pool (- (var-get penalty-pool) bonus-amount))
+        (map-set contractor-bonuses
+          { contractor: contractor, request-id: request-id }
+          {
+            bonus-amount: bonus-amount,
+            early-completion: true,
+            time-saved: time-saved
+          })
+      )
+      true
+    )
     
     (map-set maintenance-requests
       { request-id: request-id }
@@ -398,4 +507,48 @@
 
 (define-read-only (get-multisig-threshold)
   (var-get multisig-threshold)
+)
+
+(define-read-only (get-priority-name (priority uint))
+  (if (is-eq priority PRIORITY-EMERGENCY)
+    "Emergency"
+    (if (is-eq priority PRIORITY-URGENT)
+      "Urgent"
+      (if (is-eq priority PRIORITY-NORMAL)
+        "Normal"
+        "Low")))
+)
+
+(define-read-only (get-sla-deadline (priority uint))
+  (+ stacks-block-height (get-sla-blocks priority))
+)
+
+(define-read-only (get-penalty-info (landlord principal))
+  (map-get? priority-penalties { landlord: landlord })
+)
+
+(define-read-only (get-contractor-bonus (contractor principal) (request-id uint))
+  (map-get? contractor-bonuses { contractor: contractor, request-id: request-id })
+)
+
+(define-read-only (get-penalty-pool-balance)
+  (var-get penalty-pool)
+)
+
+(define-read-only (check-sla-status (request-id uint))
+  (let
+    (
+      (request (unwrap! (map-get? maintenance-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
+      (current-block stacks-block-height)
+      (sla-deadline (get sla-deadline request))
+      (status (get status request))
+    )
+    (ok {
+      sla-deadline: sla-deadline,
+      current-block: current-block,
+      blocks-remaining: (if (> sla-deadline current-block) (- sla-deadline current-block) u0),
+      sla-violated: (and (> current-block sla-deadline) (is-eq status STATUS-SUBMITTED)),
+      priority: (get priority request)
+    })
+  )
 )
