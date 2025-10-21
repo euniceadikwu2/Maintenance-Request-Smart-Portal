@@ -107,7 +107,7 @@
   (let
     (
       (new-id (+ (var-get request-counter) u1))
-      (current-time block-height)
+      (current-time stacks-block-height)
     )
     (asserts! (is-valid-priority priority) ERR-INVALID-PRIORITY)
     (asserts! (> estimated-cost u0) ERR-INVALID-COST)
@@ -146,7 +146,7 @@
   (let
     (
       (request (unwrap! (map-get? maintenance-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
-      (current-time block-height)
+      (current-time stacks-block-height)
       (old-status (get status request))
     )
     (asserts! (is-valid-status new-status) ERR-INVALID-STATUS)
@@ -179,7 +179,7 @@
   (let
     (
       (request (unwrap! (map-get? maintenance-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
-      (current-time block-height)
+      (current-time stacks-block-height)
     )
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
     
@@ -202,7 +202,7 @@
   (let
     (
       (request (unwrap! (map-get? maintenance-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
-      (current-time block-height)
+      (current-time stacks-block-height)
     )
     (asserts! (> cost u0) ERR-INVALID-COST)
     (asserts! 
@@ -359,7 +359,7 @@
   (let
     (
       (new-id (+ (var-get schedule-counter) u1))
-      (current-time block-height)
+      (current-time stacks-block-height)
     )
     (asserts! (is-valid-frequency frequency) ERR-INVALID-FREQUENCY)
     (asserts! (> estimated-hours u0) ERR-INVALID-COST)
@@ -396,7 +396,7 @@
   (let
     (
       (schedule (unwrap! (map-get? scheduled-maintenance { schedule-id: schedule-id }) ERR-SCHEDULE-NOT-FOUND))
-      (current-time block-height)
+      (current-time stacks-block-height)
     )
     (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
     (asserts! (get is-active schedule) ERR-SCHEDULE-INACTIVE)
@@ -417,7 +417,7 @@
   (let
     (
       (schedule (unwrap! (map-get? scheduled-maintenance { schedule-id: schedule-id }) ERR-SCHEDULE-NOT-FOUND))
-      (current-time block-height)
+      (current-time stacks-block-height)
     )
     (asserts! 
       (or 
@@ -500,7 +500,7 @@
   (match (map-get? scheduled-maintenance { schedule-id: schedule-id })
     schedule (and
       (get is-active schedule)
-      (< (get next-due-date schedule) block-height)
+      (< (get next-due-date schedule) stacks-block-height)
     )
     false
   )
