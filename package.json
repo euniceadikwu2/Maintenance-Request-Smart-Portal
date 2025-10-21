@@ -1,0 +1,12 @@
+{
+  "name": "maintenance-request-smart-portal",
+  "version": "1.0.0",
+  "description": "Smart contract for maintenance request tracking",
+  "scripts": {
+    "test": "clarinet test",
+    "check": "clarinet check"
+  },
+  "devDependencies": {
+    "@hirosystems/clarinet-sdk": "^2.0.0"
+  }
+}
