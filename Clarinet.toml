@@ -1,0 +1,15 @@
+[project]
+name = 'maintenance-request-smart-portal'
+description = 'Smart contract for maintenance request tracking and management'
+authors = ['euniceadikwu2']
+telemetry = false
+cache_dir = '.clarinet'
+
+[contracts.maintenance-tracker]
+path = 'contracts/maintenance-tracker.clar'
+clarity_version = 3
+epoch = '3.0'
+
+[repl]
+costs_version = 3
+parser_version = 3

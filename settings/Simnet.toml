@@ -1,0 +1,16 @@
+[network]
+name = "simnet"
+stacks_node_rpc_address = "http://localhost:20443"
+deployment_fee_rate = 10
+
+[accounts.deployer]
+mnemonic = "notice oak worry limit wrap speak medal online prefer cluster roof addict wrist behave treat actual wasp year salad speed social layer crew genius"
+balance = 1000000000000000
+
+[accounts.wallet_1]
+mnemonic = "quality vacuum incur offense cherry matter armor zebra bronze decorate flight stick answer prevent lunar beyond exclude tumble blanket pause involve perfect abandon about"
+balance = 1000000000000000
+
+[accounts.wallet_2]
+mnemonic = "sell invite acquire kitten bamboo drastic junk purchase talk tune nature setup universe pulse isolate severe runway second civil balcony science feature hollow risk"
+balance = 1000000000000000

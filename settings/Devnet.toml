@@ -1,0 +1,16 @@
+[network]
+name = "devnet"
+stacks_node_rpc_address = "http://localhost:20443"
+deployment_fee_rate = 10
+
+[accounts.deployer]
+mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon"
+balance = 1000000000000000
+
+[accounts.wallet_1]
+mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon"
+balance = 1000000000000000
+
+[accounts.wallet_2]
+mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon"
+balance = 1000000000000000
