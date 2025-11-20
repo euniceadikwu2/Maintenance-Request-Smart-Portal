@@ -288,6 +288,12 @@
 (define-constant ERR-INVALID-FREQUENCY (err u203))
 (define-constant ERR-SCHEDULE-INACTIVE (err u204))
 
+;; Error constants for rating system
+(define-constant ERR-INVALID-RATING (err u300))
+(define-constant ERR-RATING-ALREADY-EXISTS (err u301))
+(define-constant ERR-NOT-COMPLETED (err u302))
+(define-constant ERR-NOT-REQUESTER (err u303))
+
 ;; Scheduled maintenance tasks data structure
 (define-map scheduled-maintenance
   { schedule-id: uint }
@@ -522,5 +528,166 @@
       (is-eq (some user) (get assigned-technician schedule))
     )
     false
+  )
+)
+
+;; =================================================================
+;; RATING & FEEDBACK SYSTEM - New Independent Feature
+;; =================================================================
+
+(define-map request-ratings
+  { request-id: uint }
+  {
+    rating: uint,
+    feedback: (string-ascii 500),
+    rated-by: principal,
+    rated-at: uint,
+    quality-score: uint,
+    timeliness-score: uint,
+    professionalism-score: uint
+  }
+)
+
+(define-map technician-performance
+  { technician: principal }
+  {
+    total-ratings: uint,
+    average-rating: uint,
+    total-score: uint,
+    completed-tasks: uint,
+    excellent-ratings: uint,
+    poor-ratings: uint
+  }
+)
+
+(define-private (is-valid-rating-value (rating uint))
+  (and (>= rating u1) (<= rating u5))
+)
+
+(define-private (calculate-overall-rating (quality uint) (timeliness uint) (professionalism uint))
+  (/ (+ quality timeliness professionalism) u3)
+)
+
+(define-public (rate-completed-request
+    (request-id uint)
+    (quality-score uint)
+    (timeliness-score uint)
+    (professionalism-score uint)
+    (feedback (string-ascii 500))
+  )
+  (let
+    (
+      (request (unwrap! (map-get? maintenance-requests { request-id: request-id }) ERR-REQUEST-NOT-FOUND))
+      (current-time stacks-block-height)
+      (overall-rating (calculate-overall-rating quality-score timeliness-score professionalism-score))
+    )
+    (asserts! (is-eq tx-sender (get requester request)) ERR-NOT-REQUESTER)
+    (asserts! (is-eq (get status request) "completed") ERR-NOT-COMPLETED)
+    (asserts! (is-none (map-get? request-ratings { request-id: request-id })) ERR-RATING-ALREADY-EXISTS)
+    (asserts! (is-valid-rating-value quality-score) ERR-INVALID-RATING)
+    (asserts! (is-valid-rating-value timeliness-score) ERR-INVALID-RATING)
+    (asserts! (is-valid-rating-value professionalism-score) ERR-INVALID-RATING)
+    
+    (map-set request-ratings
+      { request-id: request-id }
+      {
+        rating: overall-rating,
+        feedback: feedback,
+        rated-by: tx-sender,
+        rated-at: current-time,
+        quality-score: quality-score,
+        timeliness-score: timeliness-score,
+        professionalism-score: professionalism-score
+      }
+    )
+    
+    (match (get assigned-to request)
+      technician (update-technician-performance technician overall-rating)
+      true
+    )
+    
+    (ok overall-rating)
+  )
+)
+
+(define-private (update-technician-performance (technician principal) (new-rating uint))
+  (let
+    (
+      (current-perf (default-to 
+        {
+          total-ratings: u0,
+          average-rating: u0,
+          total-score: u0,
+          completed-tasks: u0,
+          excellent-ratings: u0,
+          poor-ratings: u0
+        }
+        (map-get? technician-performance { technician: technician })
+      ))
+      (new-total-ratings (+ (get total-ratings current-perf) u1))
+      (new-total-score (+ (get total-score current-perf) new-rating))
+      (new-average (/ new-total-score new-total-ratings))
+      (new-excellent (if (>= new-rating u4) (+ (get excellent-ratings current-perf) u1) (get excellent-ratings current-perf)))
+      (new-poor (if (<= new-rating u2) (+ (get poor-ratings current-perf) u1) (get poor-ratings current-perf)))
+    )
+    (map-set technician-performance
+      { technician: technician }
+      {
+        total-ratings: new-total-ratings,
+        average-rating: new-average,
+        total-score: new-total-score,
+        completed-tasks: (+ (get completed-tasks current-perf) u1),
+        excellent-ratings: new-excellent,
+        poor-ratings: new-poor
+      }
+    )
+  )
+)
+
+(define-read-only (get-request-rating (request-id uint))
+  (map-get? request-ratings { request-id: request-id })
+)
+
+(define-read-only (get-technician-performance (technician principal))
+  (map-get? technician-performance { technician: technician })
+)
+
+(define-read-only (has-request-been-rated (request-id uint))
+  (is-some (map-get? request-ratings { request-id: request-id }))
+)
+
+(define-read-only (can-rate-request (request-id uint) (user principal))
+  (match (map-get? maintenance-requests { request-id: request-id })
+    request (and
+      (is-eq user (get requester request))
+      (is-eq (get status request) "completed")
+      (not (has-request-been-rated request-id))
+    )
+    false
+  )
+)
+
+(define-read-only (get-technician-rating-summary (technician principal))
+  (match (map-get? technician-performance { technician: technician })
+    perf {
+      average-rating: (get average-rating perf),
+      total-ratings: (get total-ratings perf),
+      completed-tasks: (get completed-tasks perf),
+      excellence-rate: (if (> (get total-ratings perf) u0)
+        (/ (* (get excellent-ratings perf) u100) (get total-ratings perf))
+        u0
+      ),
+      poor-rate: (if (> (get total-ratings perf) u0)
+        (/ (* (get poor-ratings perf) u100) (get total-ratings perf))
+        u0
+      )
+    }
+    {
+      average-rating: u0,
+      total-ratings: u0,
+      completed-tasks: u0,
+      excellence-rate: u0,
+      poor-rate: u0
+    }
   )
 )
